@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ヤフオク ピッキング管理</title>
+  <style>
+    :root {
+      --primary: #2563eb;
+      --bg: #f8fafc;
+      --card: #ffffff;
+      --text: #1e293b;
+      --border: #e2e8f0;
+      --success: #16a34a;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--text); padding: 16px; padding-bottom: 80px; }
+    
+    header { margin-bottom: 20px; text-align: center; }
+    h1 { font-size: 1.4rem; color: var(--primary); }
+
+    .upload-card {
+      background: var(--card); border: 2px dashed #93c5fd; border-radius: 12px;
+      padding: 20px; text-align: center; margin-bottom: 20px; cursor: pointer;
+    }
+    .upload-card input { display: none; }
+    .btn {
+      background: var(--primary); color: white; border: none; padding: 12px 20px;
+      border-radius: 8px; font-weight: bold; width: 100%; font-size: 1rem; cursor: pointer;
+    }
+    .btn:disabled { opacity: 0.5; }
+
+    .summary-box {
+      background: var(--card); border-radius: 8px; padding: 12px 16px;
+      margin-bottom: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); font-size: 0.9rem;
+    }
+    .summary-item { display: flex; justify-content: space-between; margin-bottom: 4px; }
+    .summary-item.check { font-weight: bold; color: var(--success); border-top: 1px solid var(--border); pt: 4px; margin-top: 6px; }
+
+    .item-card {
+      background: var(--card); border-radius: 10px; padding: 14px; margin-bottom: 10px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.05); border-left: 6px solid var(--primary);
+      display: flex; align-items: center; gap: 12px; transition: opacity 0.2s;
+    }
+    .item-card.done { opacity: 0.4; text-decoration: line-through; background: #f1f5f9; border-left-color: #94a3b8; }
+    
+    .item-cb { transform: scale(1.4); cursor: pointer; }
+    .item-info { flex: 1; }
+    .location-badge {
+      display: inline-block; background: #dbeafe; color: #1e40af; font-weight: bold;
+      padding: 2px 8px; border-radius: 4px; font-size: 1.1rem; margin-bottom: 4px;
+    }
+    .location-badge.other { background: #fef3c7; color: #92400e; }
+    .meta { font-size: 0.85rem; color: #64748b; margin-top: 2px; }
+    .title { font-size: 0.95rem; font-weight: 500; margin: 4px 0; }
+
+    #loading { display: none; text-align: center; margin: 20px 0; font-weight: bold; color: var(--primary); }
+  </style>
+</head>
+<body>
+
+  <header>
+    <h1>ヤフオク 発送ピッキング</h1>
+  </header>
+
+  <div class="upload-card" onclick="document.getElementById('fileInput').click()">
+    <p>📁 画像/PDFを選択して解析</p>
+    <input type="file" id="fileInput" accept="image/*,application/pdf" onchange="handleFileSelect(event)">
+  </div>
+
+  <button class="btn" id="submitBtn" onclick="analyzeImage()" disabled>解析を実行</button>
+
+  <div id="loading">解析中... 少々お待ちください</div>
+
+  <div id="resultArea" style="display: none; margin-top: 20px;">
+    <div class="summary-box" id="summaryBox"></div>
+    <div id="itemList"></div>
+  </div>
+
+  <script>
+    let selectedFileBase64 = "";
+    let selectedFileType = "";
+
+    function handleFileSelect(event) {
+      const file = event.target.files[0];
+      if (!file) return;
+      selectedFileType = file.type;
+      const reader = new FileReader();
+      reader.onload = function (e) {
+        selectedFileBase64 = e.target.result.split(',')[1];
+        document.getElementById('submitBtn').disabled = false;
+        document.getElementById('submitBtn').innerText = `${file.name} を解析する`;
+      };
+      reader.readAsDataURL(file);
+    }
+
+    async function analyzeImage() {
+      const loading = document.getElementById('loading');
+      const resultArea = document.getElementById('resultArea');
+      loading.style.display = 'block';
+      resultArea.style.display = 'none';
+
+      // バックエンドAPI / Vercel Serverless Function経由でGemini APIを呼び出し
+      try {
+        const response = await fetch('/api/analyze', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            image: selectedFileBase64,
+            mimeType: selectedFileType,
+            prompt: getSystemPrompt()
+          })
+        });
+
+        const data = await response.json();
+        loading.style.display = 'none';
+
+        if (data.error) {
+          alert("エラーが発生しました: " + data.error);
+          return;
+        }
+
+        renderResults(data.result);
+      } catch (err) {
+        loading.style.display = 'none';
+        alert("通信エラーが発生しました。");
+      }
+    }
+
+    function getSystemPrompt() {
+      return `ヤフオクの出品終了分画像から「発送をしてください」対象商品を抽出してください。
+棚はABC（大文字）、列は1〜5、段はa〜h（必ず小文字）で管理されています。
+出力は必ず以下のJSON形式のみで返してください：
+{
+  "targetCount": 0,
+  "summaryCount": 0,
+  "items": [
+    {
+      "order": 1,
+      "managementNo": "81001-1",
+      "title": "商品名",
+      "location": "A5c",
+      "shelfType": "A棚",
+      "row": "5",
+      "tier": "c",
+      "matome": "なし"
+    }
+  ]
+}
+回収順：①A→B→C棚 ②別棚。列は5→1（奥から手前）、段はa→h。段文字はすべて小文字（a~h）で小文字として厳格に出力すること。`;
+    }
+
+    function renderResults(data) {
+      const resultArea = document.getElementById('resultArea');
+      const summaryBox = document.getElementById('summaryBox');
+      const itemList = document.getElementById('itemList');
+
+      resultArea.style.display = 'block';
+
+      const isMatch = data.targetCount === data.items.length;
+      summaryBox.innerHTML = `
+        <div class="summary-item"><span>発送対象件数:</span> <strong>${data.targetCount}件</strong></div>
+        <div class="summary-item"><span>一覧抽出件数:</span> <strong>${data.items.length}件</strong></div>
+        <div class="summary-item check"><span>ステータス:</span> <span>${isMatch ? '✅ 件数一致' : '⚠ 差異あり要確認'}</span></div>
+      `;
+
+      itemList.innerHTML = data.items.map(item => `
+        <div class="item-card" onclick="toggleDone(this)">
+          <input type="checkbox" class="item-cb" onclick="event.stopPropagation(); toggleDone(this.parentElement);">
+          <div class="item-info">
+            <div>
+              <span class="location-badge ${item.shelfType === '別棚' ? 'other' : ''}">${item.location}</span>
+              <span class="meta">#${item.order} | ${item.managementNo}</span>
+            </div>
+            <div class="title">${item.title}</div>
+            ${item.matome !== 'なし' ? `<div class="meta" style="color:#d97706;">📦 ${item.matome}</div>` : ''}
+          </div>
+        </div>
+      `).join('');
+    }
+
+    function toggleDone(card) {
+      card.classList.toggle('done');
+      const cb = card.querySelector('.item-cb');
+      if (cb) cb.checked = card.classList.contains('done');
+    }
+  </script>
+</body>
+</html>
